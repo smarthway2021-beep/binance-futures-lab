@@ -1,101 +1,67 @@
 """
-trend_ma.py - Estrategia de Tendencia com Medias Moveis
-
-Logica:
-  - MA rapida cruza acima da MA lenta -> sinal LONG
-  - MA rapida cruza abaixo da MA lenta -> sinal SHORT
-  - Stop: ATR * multiplicador abaixo/acima do entry
-  - TP: risk/reward 2:1
+tend_ma.py - Estrategia de Medias Moveis (sem pandas)
+Usa apenas listas Python puras para calcular EMA/SMA
 """
-from typing import List, Optional, Tuple
-import pandas as pd
 from loguru import logger
 
-# Parametros default da estrategia
-MA_FAST = 9
-MA_SLOW = 21
-ATR_PERIOD = 14
-ATR_MULT = 1.5
-RR_RATIO = 2.0  # risk/reward
+
+def _sma(values, period):
+    """Simple Moving Average usando lista pura."""
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
 
 
-def compute_atr(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
-    if len(closes) < period + 1:
-        return 0.0
-    tr_list = []
-    for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
-        )
-        tr_list.append(tr)
-    atr = sum(tr_list[-period:]) / period
-    return atr
+def _ema(values, period):
+    """Exponential Moving Average usando lista pura."""
+    if len(values) < period:
+        return None
+    k = 2.0 / (period + 1)
+    ema = sum(values[:period]) / period
+    for price in values[period:]:
+        ema = price * k + ema * (1 - k)
+    return ema
 
 
-def analyze(
-    klines: List[list],
-    ma_fast: int = MA_FAST,
-    ma_slow: int = MA_SLOW,
-    atr_period: int = ATR_PERIOD,
-    atr_mult: float = ATR_MULT,
-    rr_ratio: float = RR_RATIO,
-) -> Optional[dict]:
+def analyze(klines):
     """
-    Analisa candles e retorna sinal de entrada ou None.
-
-    Args:
-        klines: Lista de candles [open_time, open, high, low, close, volume, ...]
-
-    Returns:
-        dict com {side, entry, stop, tp} ou None
+    Recebe lista de klines da Binance e retorna sinal ou None.
+    Cada kline: [open_time, open, high, low, close, volume, ...]
+    Retorna: {"side": "LONG"|"SHORT", "entry": float, "stop": float, "tp": float}
     """
-    if len(klines) < ma_slow + atr_period + 2:
-        logger.debug("Candles insuficientes para analise")
+    if not klines or len(klines) < 50:
         return None
 
     closes = [float(k[4]) for k in klines]
-    highs = [float(k[2]) for k in klines]
-    lows = [float(k[3]) for k in klines]
 
-    # Calcular MAs
-    ma_f_prev = sum(closes[-(ma_fast + 1):-1]) / ma_fast
-    ma_f_curr = sum(closes[-ma_fast:]) / ma_fast
-    ma_s_prev = sum(closes[-(ma_slow + 1):-1]) / ma_slow
-    ma_s_curr = sum(closes[-ma_slow:]) / ma_slow
+    fast = _ema(closes, 9)
+    slow = _ema(closes, 21)
+    prev_fast = _ema(closes[:-1], 9)
+    prev_slow = _ema(closes[:-1], 21)
 
-    # ATR para stop
-    atr = compute_atr(highs, lows, closes, atr_period)
-    if atr == 0:
+    if None in (fast, slow, prev_fast, prev_slow):
         return None
 
-    entry = closes[-1]
-    side = None
+    current_price = closes[-1]
+    atr_period = 14
+    highs = [float(k[2]) for k in klines[-atr_period:]]
+    lows = [float(k[3]) for k in klines[-atr_period:]]
+    atr = sum(h - l for h, l in zip(highs, lows)) / atr_period
 
-    # Crossover LONG
-    if ma_f_prev <= ma_s_prev and ma_f_curr > ma_s_curr:
-        side = "LONG"
-        stop = entry - atr * atr_mult
-        tp = entry + (entry - stop) * rr_ratio
+    # Cruzamento LONG: fast cruzou acima de slow
+    if prev_fast <= prev_slow and fast > slow:
+        entry = current_price
+        stop = entry - (atr * 1.5)
+        tp = entry + (atr * 3.0)
+        logger.info("SINAL LONG | entry={:.4f} stop={:.4f} tp={:.4f}".format(entry, stop, tp))
+        return {"side": "LONG", "entry": entry, "stop": stop, "tp": tp}
 
-    # Crossover SHORT
-    elif ma_f_prev >= ma_s_prev and ma_f_curr < ma_s_curr:
-        side = "SHORT"
-        stop = entry + atr * atr_mult
-        tp = entry - (stop - entry) * rr_ratio
+    # Cruzamento SHORT: fast cruzou abaixo de slow
+    if prev_fast >= prev_slow and fast < slow:
+        entry = current_price
+        stop = entry + (atr * 1.5)
+        tp = entry - (atr * 3.0)
+        logger.info("SINAL SHORT | entry={:.4f} stop={:.4f} tp={:.4f}".format(entry, stop, tp))
+        return {"side": "SHORT", "entry": entry, "stop": stop, "tp": tp}
 
-    if side is None:
-        return None
-
-    signal = {
-        "side": side,
-        "entry": round(entry, 6),
-        "stop": round(stop, 6),
-        "tp": round(tp, 6),
-        "atr": round(atr, 6),
-        "ma_fast": round(ma_f_curr, 6),
-        "ma_slow": round(ma_s_curr, 6),
-    }
-    logger.info(f"SINAL {side} | entry={entry:.4f} stop={stop:.4f} tp={tp:.4f} atr={atr:.4f}")
-    return signal
+    return None
