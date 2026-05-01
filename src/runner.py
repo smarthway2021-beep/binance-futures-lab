@@ -9,22 +9,21 @@ from src.core.paper_engine import PaperEngine
 from src.core.store import save_trade
 from src.api.binance_client import BinanceClient
 from src.strategies.trend_ma import analyze
+from datetime import datetime
 
-# Estado global do engine (em producao use DB ou cache)
+# Estado global do engine
 _engine = PaperEngine(initial_balance=settings.paper_balance)
 _daily_start_balance = settings.paper_balance
 
 
 def run_once():
     global _engine, _daily_start_balance
+    logger.info("=== Runner tick | modo={} simbolos={} ===".format(settings.app_mode, settings.symbols))
 
-    logger.info(f"=== Runner tick | modo={settings.app_mode} simbolos={settings.symbols} ===")
-
-        # DEMO: Criar trade sintético para validar dashboard
-    if not hasattr(run_once, "_first_run_done"):        logger.info("[DEMO] Criando trade sint
-            run_once._first_run_done = Trueético de teste...")
-        from src.core.store import save_trade
-        from datetime import datetime
+    # DEMO: Criar trade sintetico no primeiro tick para validar dashboard
+    if not hasattr(run_once, "_first_run_done"):
+        run_once._first_run_done = True
+        logger.info("[DEMO] Criando trade sintetico de teste...")
         demo_trade = {
             "symbol": "BTCUSDT",
             "side": "LONG",
@@ -36,8 +35,7 @@ def run_once():
             "closed_at": datetime.now().isoformat()
         }
         save_trade(demo_trade)
-        logger.info("[DEMO] Trade sintético criado com sucesso!")
-
+        logger.info("[DEMO] Trade sintetico criado com sucesso!")
 
     # Checar drawdown diario
     if should_stop_trading(_daily_start_balance, _engine.balance, settings.max_daily_drawdown):
@@ -45,28 +43,18 @@ def run_once():
         return
 
     client = BinanceClient()
-
     for symbol in settings.symbols:
         try:
-            # Buscar candles
             klines = client.get_klines(symbol, settings.interval, limit=100)
             if not klines:
-                logger.warning(f"Sem candles para {symbol}")
+                logger.warning("Sem candles para {}".format(symbol))
                 continue
-
-            # Preco atual
             current_price = float(klines[-1][4])
-
-            # Checar saidas de posicoes abertas
             _engine.check_exits(symbol, current_price)
-
-            # Gerar sinal
             signal = analyze(klines)
             if signal is None:
-                logger.debug(f"{symbol}: sem sinal")
+                logger.debug("{}: sem sinal".format(symbol))
                 continue
-
-            # Calcular tamanho da posicao
             size = position_size(
                 balance=_engine.balance,
                 risk_pct=settings.risk_per_trade,
@@ -75,10 +63,8 @@ def run_once():
                 leverage=settings.max_leverage,
             )
             if size <= 0:
-                logger.warning(f"{symbol}: size calculado zerado, pulando")
+                logger.warning("{}: size calculado zerado, pulando".format(symbol))
                 continue
-
-            # Abrir posicao no paper engine
             opened = _engine.open_position(
                 symbol=symbol,
                 side=signal["side"],
@@ -87,20 +73,12 @@ def run_once():
                 stop=signal["stop"],
                 tp=signal["tp"],
             )
-
             if opened:
-                logger.info(f"[OK] Posicao aberta: {symbol} {signal['side']} @ {signal['entry']}")
-
+                logger.info("[OK] Posicao aberta: {} {} @ {}".format(symbol, signal["side"], signal["entry"]))
         except Exception as e:
-            logger.error(f"Erro processando {symbol}: {e}")
+            logger.error("Erro processando {}: {}".format(symbol, e))
 
-    # Salvar trades fechados neste tick
     for trade in _engine.trades[-10:]:
         save_trade(trade.to_dict())
-
     stats = _engine.get_stats()
-    logger.info(f"Stats: {stats}")
-
-
-if __name__ == "__main__":
-    run_once()
+    logger.info("Stats: {}".format(stats))
