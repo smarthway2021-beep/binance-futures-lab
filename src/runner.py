@@ -1,6 +1,6 @@
 """
 runner.py - Loop principal do bot
-Roda a estrategia para todos os simbolos configurados
+Roda a estrategia de Medias Moveis no testnet da Binance Futures
 """
 from loguru import logger
 from src.core.config import settings
@@ -20,23 +20,6 @@ def run_once():
     global _engine, _daily_start_balance
     logger.info("=== Runner tick | modo={} simbolos={} ===".format(settings.app_mode, settings.symbols))
 
-    # DEMO: Criar trade sintetico no primeiro tick para validar dashboard
-    if not hasattr(run_once, "_first_run_done"):
-        run_once._first_run_done = True
-        logger.info("[DEMO] Criando trade sintetico de teste...")
-        demo_trade = {
-            "symbol": "BTCUSDT",
-            "side": "LONG",
-            "entry": 95000.0,
-            "exit": 96500.0,
-            "size": 0.01,
-            "pnl": 15.0,
-            "reason": "TP",
-            "closed_at": datetime.now().isoformat()
-        }
-        save_trade(demo_trade)
-        logger.info("[DEMO] Trade sintetico criado com sucesso!")
-
     # Checar drawdown diario
     if should_stop_trading(_daily_start_balance, _engine.balance, settings.max_daily_drawdown):
         logger.warning("Drawdown diario atingido - pulando este tick")
@@ -45,16 +28,29 @@ def run_once():
     client = BinanceClient()
     for symbol in settings.symbols:
         try:
+            # Buscar candles reais do testnet Binance
             klines = client.get_klines(symbol, settings.interval, limit=100)
             if not klines:
                 logger.warning("Sem candles para {}".format(symbol))
                 continue
+
+            # Preco real atual do mercado
             current_price = float(klines[-1][4])
+            logger.info("[REAL] {} preco atual = ${:.2f} (fonte: Binance Testnet)".format(symbol, current_price))
+
+            # Checar saidas de posicoes abertas
             _engine.check_exits(symbol, current_price)
+
+            # Gerar sinal via estrategia EMA 9/21
             signal = analyze(klines)
             if signal is None:
-                logger.debug("{}: sem sinal".format(symbol))
+                logger.info("{}: sem sinal de entrada neste tick".format(symbol))
                 continue
+
+            logger.info("[SINAL] {} {} | entry={:.2f} stop={:.2f} tp={:.2f}".format(
+                symbol, signal["side"], signal["entry"], signal["stop"], signal["tp"]))
+
+            # Calcular tamanho da posicao
             size = position_size(
                 balance=_engine.balance,
                 risk_pct=settings.risk_per_trade,
@@ -65,6 +61,8 @@ def run_once():
             if size <= 0:
                 logger.warning("{}: size calculado zerado, pulando".format(symbol))
                 continue
+
+            # Abrir posicao no paper engine (simulado com preco real)
             opened = _engine.open_position(
                 symbol=symbol,
                 side=signal["side"],
@@ -74,11 +72,19 @@ def run_once():
                 tp=signal["tp"],
             )
             if opened:
-                logger.info("[OK] Posicao aberta: {} {} @ {}".format(symbol, signal["side"], signal["entry"]))
+                logger.info("[TRADE ABERTO] {} {} @ {:.2f} | size={:.4f}".format(
+                    symbol, signal["side"], signal["entry"], size))
+
         except Exception as e:
             logger.error("Erro processando {}: {}".format(symbol, e))
+            import traceback
+            logger.error(traceback.format_exc())
 
+    # Salvar trades fechados
     for trade in _engine.trades[-10:]:
         save_trade(trade.to_dict())
+
     stats = _engine.get_stats()
-    logger.info("Stats: {}".format(stats))
+    logger.info("[STATS] balance={:.2f} trades={} wins={} pnl={:.2f}".format(
+        _engine.balance, stats.get("total_trades", 0),
+        stats.get("wins", 0), stats.get("pnl", 0.0)))
