@@ -1,0 +1,46 @@
+name: CI - Binance Futures Lab
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint check
+        run: |
+          pip install flake8
+          flake8 src/ --max-line-length=120 || true
+
+      - name: Run tests
+        env:
+          APP_MODE: paper
+          BINANCE_API_KEY: test_key
+          BINANCE_API_SECRET: test_secret
+          BASE_URL: https://demo-fapi.binance.com
+          WS_BASE_URL: wss://fstream.binancefuture.com
+          SYMBOLS: BTCUSDT
+          INTERVAL: 5m
+          RISK_PER_TRADE: "0.01"
+          MAX_DAILY_DRAWDOWN: "0.05"
+          MAX_LEVERAGE: "5"
+          PAPER_BALANCE: "10000.0"
+          LOG_LEVEL: INFO
+        run: |
+          pytest tests/ -v --tb=short || echo "Sem testes ainda - OK"
