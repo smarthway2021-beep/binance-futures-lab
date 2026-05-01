@@ -19,7 +19,24 @@ STRATEGIES = [
     ("Scalping_RSI", scalping_rsi.check_signal),
 ]
 
-RISK_PCT = 0.01  # risk 1% of balance per trade
+RISK_PCT = 0.01
+
+
+def _to_candle_dicts(raw_klines):
+    """Convert raw Binance kline lists to dicts."""
+    result = []
+    for k in raw_klines:
+        try:
+            result.append({
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+        except (IndexError, TypeError, ValueError):
+            pass
+    return result
 
 
 def run_strategy(name, signal_fn, candles, symbol):
@@ -33,15 +50,13 @@ def run_strategy(name, signal_fn, candles, symbol):
         if price <= 0:
             return
 
-        # Simple position sizing: risk 1% of balance
         risk_amount = _engine.balance * RISK_PCT
-        stop_distance = price * 0.005  # 0.5% stop loss
+        stop_distance = price * 0.005
         size = (risk_amount * settings.max_leverage) / stop_distance
         if size <= 0:
             return
 
-        # Daily drawdown guard
-        if _engine.balance < _daily_start_balance * (1 - 0.05):
+        if _engine.balance < _daily_start_balance * 0.95:
             logger.warning(f"[{name}] Daily drawdown limit reached")
             return
 
@@ -66,7 +81,7 @@ def run_strategy(name, signal_fn, candles, symbol):
         logger.info(f"[{name}] Trade saved | pnl={pnl:.4f} | balance={_engine.balance:.2f}")
 
     except Exception as e:
-        logger.error(f"[{name}] Error in run_strategy: {e}")
+        logger.error(f"[{name}] Error: {e}")
 
 
 def tick():
@@ -82,9 +97,15 @@ def tick():
 
     while True:
         try:
-            candles = client.get_klines(symbol, "1m", limit=50)
-            if not candles or len(candles) < 25:
+            raw = client.get_klines(symbol, "1m", limit=50)
+            if not raw or len(raw) < 25:
                 logger.warning("Not enough candles, waiting...")
+                time.sleep(interval_sec)
+                continue
+
+            candles = _to_candle_dicts(raw)
+            if len(candles) < 25:
+                logger.warning("Not enough valid candles after parsing")
                 time.sleep(interval_sec)
                 continue
 
