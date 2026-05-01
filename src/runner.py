@@ -3,13 +3,13 @@ import time
 import threading
 from loguru import logger
 from src.core.config import settings
-from src.core.paper_engine import PaperEngine
 from src.core.store import save_trade
 from src.api.binance_client import BinanceClient
 from src.strategies import trend_ma, breakout, scalping_rsi
 from datetime import datetime
 
-_engine = PaperEngine(initial_balance=settings.paper_balance)
+# Simple balance tracker (paper trading)
+_balance = settings.paper_balance
 _daily_start_balance = settings.paper_balance
 _lock = threading.Lock()
 
@@ -22,8 +22,11 @@ STRATEGIES = [
 RISK_PCT = 0.01
 
 
+def get_balance():
+    return _balance
+
+
 def _to_candle_dicts(raw_klines):
-    """Convert raw Binance kline lists to dicts."""
     result = []
     for k in raw_klines:
         try:
@@ -40,7 +43,7 @@ def _to_candle_dicts(raw_klines):
 
 
 def run_strategy(name, signal_fn, candles, symbol):
-    global _engine, _daily_start_balance
+    global _balance, _daily_start_balance
     try:
         signal = signal_fn(candles)
         if signal not in ("BUY", "SELL"):
@@ -50,13 +53,16 @@ def run_strategy(name, signal_fn, candles, symbol):
         if price <= 0:
             return
 
-        risk_amount = _engine.balance * RISK_PCT
+        with _lock:
+            bal = _balance
+
+        risk_amount = bal * RISK_PCT
         stop_distance = price * 0.005
         size = (risk_amount * settings.max_leverage) / stop_distance
         if size <= 0:
             return
 
-        if _engine.balance < _daily_start_balance * 0.95:
+        if bal < _daily_start_balance * 0.95:
             logger.warning(f"[{name}] Daily drawdown limit reached")
             return
 
@@ -66,7 +72,7 @@ def run_strategy(name, signal_fn, candles, symbol):
         pnl = (exit_price - price) * size if signal == "BUY" else (price - exit_price) * size
 
         with _lock:
-            _engine.apply_pnl(pnl)
+            _balance += pnl
 
         trade = {
             "symbol": symbol,
@@ -78,7 +84,7 @@ def run_strategy(name, signal_fn, candles, symbol):
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
         save_trade(trade)
-        logger.info(f"[{name}] Trade saved | pnl={pnl:.4f} | balance={_engine.balance:.2f}")
+        logger.info(f"[{name}] Trade saved | pnl={pnl:.4f} | balance={_balance:.2f}")
 
     except Exception as e:
         logger.error(f"[{name}] Error: {e}")
@@ -118,7 +124,7 @@ def tick():
             for t in threads:
                 t.join(timeout=10)
 
-            logger.info(f"Tick done | balance={_engine.balance:.2f} USDT")
+            logger.info(f"Tick done | balance={_balance:.2f} USDT")
 
         except Exception as e:
             logger.error(f"Tick error: {e}")
@@ -133,4 +139,9 @@ def start():
 
 
 def get_engine():
-    return _engine
+    """Returns a simple object with balance attribute for compatibility."""
+    class _FakeEngine:
+        @property
+        def balance(self):
+            return _balance
+    return _FakeEngine()
