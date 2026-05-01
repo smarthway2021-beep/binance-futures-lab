@@ -63,7 +63,7 @@ def run_strategy(name, signal_fn, candles, symbol):
 
 def tick():
     global _daily_start_balance
-    symbol = settings.symbol
+    symbol = settings.symbols[0]
     try:
         interval_sec = int(os.environ.get("BOT_INTERVAL", "30"))
     except ValueError:
