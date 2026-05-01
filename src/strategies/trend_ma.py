@@ -1,7 +1,3 @@
-"""
-trend_ma.py - Estrategia Multi-Sinal: EMA crossover + RSI + Price Action
-Gera sinais mais frequentes para validacao do sistema
-"""
 from loguru import logger
 
 
@@ -35,56 +31,31 @@ def _rsi(values, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def analyze(klines):
+def check_signal(candles):
     """
-    Estrategia combinada: EMA 9/21 crossover + RSI confirmacao
-    Retorna sinal ou None
+    EMA 9/21 + RSI strategy.
+    BUY when fast EMA > slow EMA and RSI < 70.
+    SELL when fast EMA < slow EMA and RSI > 30.
     """
-    if not klines or len(klines) < 30:
+    if len(candles) < 25:
         return None
 
-    closes = [float(k[4]) for k in klines]
-    highs = [float(k[2]) for k in klines]
-    lows = [float(k[3]) for k in klines]
+    closes = [c['close'] for c in candles]
+    current_price = closes[-1]
 
     ema_fast = _ema(closes, 9)
     ema_slow = _ema(closes, 21)
-    ema_fast_prev = _ema(closes[:-1], 9)
-    ema_slow_prev = _ema(closes[:-1], 21)
-
-    if None in (ema_fast, ema_slow, ema_fast_prev, ema_slow_prev):
-        return None
-
     rsi = _rsi(closes)
-    current_price = closes[-1]
 
-    # ATR para stop/tp
-    atr_period = 10
-    atr = sum(highs[-atr_period:][i] - lows[-atr_period:][i]
-              for i in range(atr_period)) / atr_period
-    if atr == 0:
-        atr = current_price * 0.005
+    if ema_fast is None or ema_slow is None:
+        return None
 
     diff_pct = abs(ema_fast - ema_slow) / ema_slow * 100
 
-    # LONG: EMA fast acima de slow + RSI nao sobrecomprado
     if ema_fast > ema_slow and rsi < 70:
-        entry = current_price
-        stop = entry - (atr * 1.5)
-        tp = entry + (atr * 2.5)
-        logger.info("SINAL LONG | entry={:.2f} stop={:.2f} tp={:.2f} rsi={:.1f} diff={:.3f}%".format(
-            entry, stop, tp, rsi, diff_pct))
-        return {"side": "LONG", "entry": entry, "stop": stop, "tp": tp}
-
-    # SHORT: EMA fast abaixo de slow + RSI nao sobrevendido
+        logger.info(f"EMA_RSI BUY | price={current_price:.2f} rsi={rsi:.1f} diff={diff_pct:.3f}%")
+        return 'BUY'
     if ema_fast < ema_slow and rsi > 30:
-        entry = current_price
-        stop = entry + (atr * 1.5)
-        tp = entry - (atr * 2.5)
-        logger.info("SINAL SHORT | entry={:.2f} stop={:.2f} tp={:.2f} rsi={:.1f} diff={:.3f}%".format(
-            entry, stop, tp, rsi, diff_pct))
-        return {"side": "SHORT", "entry": entry, "stop": stop, "tp": tp}
-
-    logger.info("Sem sinal | ema_fast={:.2f} ema_slow={:.2f} rsi={:.1f}".format(
-        ema_fast, ema_slow, rsi))
+        logger.info(f"EMA_RSI SELL | price={current_price:.2f} rsi={rsi:.1f} diff={diff_pct:.3f}%")
+        return 'SELL'
     return None
