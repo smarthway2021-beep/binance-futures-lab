@@ -58,8 +58,8 @@ src/
 
 ```bash
 # APIs da Binance (VOCÊ DEVE FORNECER AS SUAS)
-BINANCE_API_KEY=sua_api_key_aqui
-BINANCE_SECRET_KEY=sua_secret_key_aqui
+BINANCE_API_KEY=2utR1qR1ETDWplreL73UmalujTlxC8O490UyxJC5HHHNomO9DnSzsXh54r9M4d5v
+BINANCE_SECRET_KEY=sdJAY02lp2IcK6YjEgfB4Y9Dhv0Or6yMG0adHCPcLGbqm52mQAMUKj5HWOM0oj7L
 
 # Modo de operação
 APP_MODE=paper  # Manter como 'paper' para não fazer trades reais
