@@ -1,0 +1,70 @@
+# render.yaml - Blueprint de deploy no Render
+# https://render.com/docs/blueprint-spec
+
+services:
+  # ── Web Service: Painel FastAPI ──────────────────────────
+  - type: web
+    name: binance-futures-web
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.web.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_MODE
+        value: paper
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      - key: BASE_URL
+        value: https://demo-fapi.binance.com
+      - key: WS_BASE_URL
+        value: wss://fstream.binancefuture.com
+      - key: SYMBOLS
+        value: BTCUSDT,ETHUSDT,SOLUSDT
+      - key: INTERVAL
+        value: 5m
+      - key: RISK_PER_TRADE
+        value: "0.01"
+      - key: MAX_DAILY_DRAWDOWN
+        value: "0.05"
+      - key: MAX_LEVERAGE
+        value: "5"
+      - key: PAPER_BALANCE
+        value: "10000.0"
+      - key: LOG_LEVEL
+        value: INFO
+
+  # ── Cron Job: Runner do bot a cada 5 minutos ─────────────
+  - type: cron
+    name: binance-futures-loop
+    runtime: python
+    plan: free
+    schedule: "*/5 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.runner
+    envVars:
+      - key: APP_MODE
+        value: paper
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      - key: BASE_URL
+        value: https://demo-fapi.binance.com
+      - key: WS_BASE_URL
+        value: wss://fstream.binancefuture.com
+      - key: SYMBOLS
+        value: BTCUSDT,ETHUSDT,SOLUSDT
+      - key: INTERVAL
+        value: 5m
+      - key: RISK_PER_TRADE
+        value: "0.01"
+      - key: MAX_DAILY_DRAWDOWN
+        value: "0.05"
+      - key: MAX_LEVERAGE
+        value: "5"
+      - key: PAPER_BALANCE
+        value: "10000.0"
+      - key: LOG_LEVEL
+        value: INFO
