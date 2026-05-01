@@ -35,21 +35,14 @@ logger.add(_log_sink, format="{time:HH:mm:ss} | {level} | {message}")
 
 
 def _bot_loop():
-    from src.runner import run_once
+    import src.runner as _runner
     _bot_status["running"] = True
     logger.info("Bot background thread iniciada | intervalo={}s".format(BOT_INTERVAL))
+    _runner.start()
     while True:
-        try:
-            logger.info("=== Tick #{} ===".format(_bot_status["tick_count"] + 1))
-            run_once()
-            _bot_status["tick_count"] += 1
-            _bot_status["last_tick"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        except Exception as e:
-            _bot_status["errors"] += 1
-            logger.error("Erro no bot loop: {}".format(e))
-            import traceback
-            logger.error(traceback.format_exc())
-        time.sleep(BOT_INTERVAL)
+        time.sleep(10)
+        _bot_status["tick_count"] += 1
+        _bot_status["last_tick"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 @asynccontextmanager
