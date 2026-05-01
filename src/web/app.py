@@ -1,49 +1,59 @@
 """
-app.py - Painel Web com FastAPI + Bot em Background Thread
-O bot roda automaticamente em loop dentro do proprio web service.
-Isto permite rodar 100% no free tier do Render sem precisar de Cron Job.
+app.py - Dashboard Web do Binance Futures Lab
+Endpoints: / dashboard | /api/stats | /api/trades | /api/price | /api/logs
 """
-import os
-import time
-import threading
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
-from contextlib import asynccontextmanager
 from loguru import logger
-from src.core.store import load_trades
-from src.core.config import settings
+import threading
+import time
+import os
+import requests as _requests
+from collections import deque
 
-# Intervalo em segundos entre cada execucao do bot (default 5 min)
-BOT_INTERVAL = int(os.getenv("BOT_INTERVAL_SECONDS", "300"))
+from src.core.config import settings
+from src.core.store import get_trades
+
+BOT_INTERVAL = int(os.getenv("BOT_INTERVAL", "60"))
+BASE_URL = os.getenv("BASE_URL", "https://testnet.binancefuture.com")
 
 _bot_status = {
     "running": False,
-    "last_tick": None,
     "tick_count": 0,
+    "last_tick": None,
     "errors": 0,
 }
 
+# Buffer circular de logs em memoria
+_log_buffer = deque(maxlen=200)
+
+def _log_sink(message):
+    _log_buffer.append(str(message).strip())
+
+logger.add(_log_sink, format="{time:HH:mm:ss} | {level} | {message}")
+
 
 def _bot_loop():
-    """Loop do bot rodando em background thread."""
     from src.runner import run_once
     _bot_status["running"] = True
-    logger.info(f"Bot background thread iniciada | intervalo={BOT_INTERVAL}s")
+    logger.info("Bot background thread iniciada | intervalo={}s".format(BOT_INTERVAL))
     while True:
         try:
-            logger.info(f"=== Tick #{_bot_status['tick_count'] + 1} ===")
+            logger.info("=== Tick #{} ===".format(_bot_status["tick_count"] + 1))
             run_once()
             _bot_status["tick_count"] += 1
             _bot_status["last_tick"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         except Exception as e:
             _bot_status["errors"] += 1
-            logger.error(f"Erro no bot loop: {e}")
+            logger.error("Erro no bot loop: {}".format(e))
+            import traceback
+            logger.error(traceback.format_exc())
         time.sleep(BOT_INTERVAL)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inicia background thread quando o servidor sobe."""
     t = threading.Thread(target=_bot_loop, daemon=True)
     t.start()
     logger.info("Background bot thread iniciada com sucesso")
@@ -51,138 +61,235 @@ async def lifespan(app: FastAPI):
     logger.info("Servidor encerrando...")
 
 
-app = FastAPI(title="Binance Futures Lab", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Binance Futures Lab", lifespan=lifespan)
 
 
-@app.get("/health")
-def health():
+@app.get("/api/stats")
+def api_stats():
+    trades = get_trades()
+    wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+    losses = sum(1 for t in trades if t.get("pnl", 0) <= 0)
+    pnl = sum(t.get("pnl", 0) for t in trades)
+    total = len(trades)
+    win_rate = round((wins / total * 100) if total > 0 else 0, 1)
     return {
-        "status": "ok",
-        "mode": settings.app_mode,
-        "symbols": settings.symbols,
-        "bot_interval_seconds": BOT_INTERVAL,
-        "bot_ticks": _bot_status["tick_count"],
-        "bot_errors": _bot_status["errors"],
+        "running": _bot_status["running"],
+        "tick_count": _bot_status["tick_count"],
         "last_tick": _bot_status["last_tick"],
+        "errors": _bot_status["errors"],
+        "total_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "pnl": round(pnl, 2),
+        "win_rate": win_rate,
     }
 
 
 @app.get("/api/trades")
-def get_trades():
-    trades = load_trades()
-    return JSONResponse(content={"total": len(trades), "trades": trades})
+def api_trades():
+    return get_trades()[-50:]
 
 
-@app.get("/api/stats")
-def get_stats():
-    trades = load_trades()
-    if not trades:
-        return {"total_trades": 0, "total_pnl": 0, "wins": 0, "losses": 0, "win_rate": 0}
-    total_pnl = sum(float(t.get("pnl", 0)) for t in trades)
-    wins = sum(1 for t in trades if float(t.get("pnl", 0)) > 0)
-    losses = len(trades) - wins
-    return {
-        "total_trades": len(trades),
-        "total_pnl": round(total_pnl, 4),
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(wins / len(trades) * 100, 2),
-        "bot_ticks": _bot_status["tick_count"],
-        "bot_errors": _bot_status["errors"],
-        "last_tick": _bot_status["last_tick"],
-    }
+@app.get("/api/price")
+def api_price():
+    """Busca preco real atual do BTC direto da Binance Testnet."""
+    try:
+        symbol = settings.symbols[0] if settings.symbols else "BTCUSDT"
+        url = "{}/fapi/v1/ticker/price?symbol={}".format(BASE_URL, symbol)
+        resp = _requests.get(url, timeout=5)
+        data = resp.json()
+        price = float(data.get("price", 0))
+        return {
+            "symbol": symbol,
+            "price": price,
+            "source": "Binance Futures Testnet",
+            "url": url,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/logs")
+def api_logs():
+    """Retorna os ultimos logs do bot em tempo real."""
+    return {"logs": list(_log_buffer)[-100:]}
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
+    return HTMLResponse(content=_html_dashboard())
+
+
+def _html_dashboard():
     return """
-    <!DOCTYPE html>
-    <html lang='pt-br'>
-    <head>
-        <meta charset='UTF-8'>
-        <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-        <title>Binance Futures Lab</title>
-        <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; }
-            body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
-            h1 { color: #f0b90b; margin-bottom: 20px; font-size: 1.8em; }
-            h2 { color: #f0b90b; margin-bottom: 12px; font-size: 1.2em; }
-            .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 15px; }
-            .stats-grid { display: flex; flex-wrap: wrap; gap: 15px; }
-            .stat { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 15px 20px; text-align: center; min-width: 120px; }
-            .stat .value { font-size: 1.8em; font-weight: bold; color: #f0b90b; }
-            .stat .label { font-size: 0.8em; color: #8b949e; margin-top: 4px; }
-            .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.8em; font-weight: bold; }
-            .badge-green { background: #1a4731; color: #3fb950; }
-            .badge-yellow { background: #3d2e00; color: #f0b90b; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9em; }
-            th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #21262d; }
-            th { color: #8b949e; font-weight: normal; text-transform: uppercase; font-size: 0.75em; }
-            .positive { color: #3fb950; font-weight: bold; }
-            .negative { color: #f85149; font-weight: bold; }
-            button { background: #f0b90b; color: #000; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 0.85em; font-weight: bold; }
-            button:hover { background: #d4a017; }
-            .status-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
-            .dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb950; animation: pulse 2s infinite; }
-            @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-        </style>
-    </head>
-    <body>
-        <h1>Binance Futures Lab</h1>
-        <div class='card'>
-            <div class='status-bar'>
-                <div class='dot'></div>
-                <span>Bot rodando em background</span>
-                <span id='mode-badge'></span>
-            </div>
-            <div class='stats-grid' id='stats'>Carregando...</div>
-        </div>
-        <div class='card'>
-            <h2>Trades Recentes <button onclick='loadAll()'>Atualizar</button></h2>
-            <table>
-                <thead><tr><th>Simbolo</th><th>Lado</th><th>Entry</th><th>Exit</th><th>PnL (USDT)</th><th>Motivo</th><th>Data</th></tr></thead>
-                <tbody id='trades-body'><tr><td colspan='7' style='text-align:center;color:#8b949e'>Nenhum trade ainda...</td></tr></tbody>
-            </table>
-        </div>
-        <script>
-            async function loadStats() {
-                const r = await fetch('/api/stats');
-                const d = await r.json();
-                document.getElementById('stats').innerHTML = `
-                    <div class='stat'><div class='value'>${d.total_trades}</div><div class='label'>Total Trades</div></div>
-                    <div class='stat'><div class='value ${d.total_pnl >= 0 ? "positive" : "negative"}'>${(d.total_pnl||0).toFixed(2)}</div><div class='label'>PnL Total</div></div>
-                    <div class='stat'><div class='value positive'>${d.wins}</div><div class='label'>Wins</div></div>
-                    <div class='stat'><div class='value negative'>${d.losses}</div><div class='label'>Losses</div></div>
-                    <div class='stat'><div class='value'>${d.win_rate||0}%</div><div class='label'>Win Rate</div></div>
-                    <div class='stat'><div class='value'>${d.bot_ticks||0}</div><div class='label'>Ticks</div></div>
-                    <div class='stat'><div class='value ${(d.bot_errors||0) > 0 ? "negative" : "positive"}'>${d.bot_errors||0}</div><div class='label'>Erros</div></div>
-                `;
-                document.getElementById('mode-badge').innerHTML = `<span class='badge badge-yellow'>${d.last_tick ? 'Ultimo tick: ' + d.last_tick : 'Aguardando 1o tick...'}</span>`;
-            }
-            async function loadTrades() {
-                const r = await fetch('/api/trades');
-                const d = await r.json();
-                const tbody = document.getElementById('trades-body');
-                if (!d.trades || d.trades.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8b949e">Nenhum trade ainda...</td></tr>';
-                    return;
-                }
-                tbody.innerHTML = d.trades.slice(-30).reverse().map(t => `
-                    <tr>
-                        <td><strong>${t.symbol}</strong></td>
-                        <td><span class='${t.side === "LONG" ? "positive" : "negative"}'>${t.side}</span></td>
-                        <td>${parseFloat(t.entry||0).toFixed(4)}</td>
-                        <td>${parseFloat(t.exit||0).toFixed(4)}</td>
-                        <td class='${parseFloat(t.pnl||0) >= 0 ? "positive" : "negative"}'>${parseFloat(t.pnl||0).toFixed(4)}</td>
-                        <td>${t.reason}</td>
-                        <td style='font-size:0.8em;color:#8b949e'>${t.closed_at}</td>
-                    </tr>
-                `).join('');
-            }
-            async function loadAll() { await loadStats(); await loadTrades(); }
-            loadAll();
-            setInterval(loadAll, 30000);
-        </script>
-    </body>
-    </html>
-    """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="30">
+<title>Binance Futures Lab</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; color: #f0f0f0; font-family: monospace; }
+  .header { background: #111; padding: 20px 30px; border-bottom: 2px solid #f0b90b; }
+  .header h1 { color: #f0b90b; font-size: 24px; }
+  .header small { color: #888; font-size: 12px; }
+  .container { padding: 20px 30px; }
+  .price-banner { background: #1a1a1a; border: 1px solid #f0b90b; border-radius: 8px;
+    padding: 15px 25px; margin-bottom: 20px; display: flex; align-items: center; gap: 20px; }
+  .price-banner .label { color: #888; font-size: 12px; }
+  .price-banner .price { color: #00e676; font-size: 32px; font-weight: bold; }
+  .price-banner .source { color: #555; font-size: 11px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 15px; margin-bottom: 20px; }
+  .card { background: #1a1a1a; border-radius: 8px; padding: 20px; text-align: center; border: 1px solid #222; }
+  .card .val { font-size: 28px; font-weight: bold; color: #f0b90b; }
+  .card .lbl { font-size: 11px; color: #888; margin-top: 5px; }
+  .section { background: #1a1a1a; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid #222; }
+  .section h2 { color: #f0b90b; font-size: 15px; margin-bottom: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #888; font-weight: normal; padding: 6px 10px; border-bottom: 1px solid #333; }
+  td { padding: 8px 10px; border-bottom: 1px solid #1e1e1e; }
+  .long { color: #00e676; } .short { color: #f44336; }
+  .pnl-pos { color: #00e676; } .pnl-neg { color: #f44336; }
+  .log-box { background: #0a0a0a; border-radius: 4px; padding: 12px; max-height: 350px;
+    overflow-y: auto; font-size: 11px; line-height: 1.6; color: #aaa; }
+  .log-box .real { color: #00e676; } .log-box .trade { color: #f0b90b; }
+  .log-box .err { color: #f44336; } .log-box .stats { color: #64b5f6; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+  .badge-green { background: #1b3d2a; color: #00e676; }
+  .status-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px;
+    background: #1a1a1a; padding: 12px 20px; border-radius: 8px; border: 1px solid #222; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #00e676;
+    animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Binance Futures Lab</h1>
+  <small>Paper Trading | Estrategia EMA 9/21 | Testnet Binance Futures</small>
+</div>
+<div class="container">
+
+  <div class="price-banner" id="priceBanner">
+    <div>
+      <div class="label">BTCUSDT - Preco Real Atual</div>
+      <div class="price" id="livePrice">Carregando...</div>
+      <div class="source" id="priceSource"></div>
+    </div>
+    <div style="margin-left:auto; text-align:right">
+      <div class="label">Fonte</div>
+      <div style="color:#f0b90b; font-size:13px">Binance Futures Testnet</div>
+      <div class="source" id="priceTime"></div>
+    </div>
+  </div>
+
+  <div class="status-bar" id="statusBar">
+    <div class="dot"></div>
+    <span id="botStatus">Bot rodando em background</span>
+    <span style="color:#555">|</span>
+    <span id="lastTick" style="color:#888; font-size:12px">Aguardando tick...</span>
+    <span style="margin-left:auto; color:#555; font-size:11px" id="autoRefresh">Auto-refresh: 30s</span>
+  </div>
+
+  <div class="cards" id="cards">
+    <div class="card"><div class="val" id="cTrades">-</div><div class="lbl">Total Trades</div></div>
+    <div class="card"><div class="val" id="cPnl">-</div><div class="lbl">PnL Total (USDT)</div></div>
+    <div class="card"><div class="val" id="cWins">-</div><div class="lbl">Wins</div></div>
+    <div class="card"><div class="val" id="cLosses">-</div><div class="lbl">Losses</div></div>
+    <div class="card"><div class="val" id="cWR">-</div><div class="lbl">Win Rate</div></div>
+    <div class="card"><div class="val" id="cTicks">-</div><div class="lbl">Ticks</div></div>
+    <div class="card"><div class="val" id="cErrors">-</div><div class="lbl">Erros</div></div>
+  </div>
+
+  <div class="section">
+    <h2>Trades Recentes (Paper)</h2>
+    <table>
+      <thead><tr>
+        <th>SIMBOLO</th><th>LADO</th><th>ENTRY</th><th>EXIT</th>
+        <th>PNL (USDT)</th><th>MOTIVO</th><th>DATA</th>
+      </tr></thead>
+      <tbody id="tradesBody"><tr><td colspan="7" style="color:#555">Carregando...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>Logs em Tempo Real <span class="badge badge-green">LIVE</span></h2>
+    <div class="log-box" id="logBox">Carregando logs...</div>
+  </div>
+
+</div>
+<script>
+async function loadPrice() {
+  try {
+    const r = await fetch('/api/price');
+    const d = await r.json();
+    if (d.price) {
+      document.getElementById('livePrice').textContent = '$' + d.price.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      document.getElementById('priceSource').textContent = 'URL: ' + d.url;
+      document.getElementById('priceTime').textContent = d.timestamp;
+    }
+  } catch(e) { document.getElementById('livePrice').textContent = 'Erro ao buscar preco'; }
+}
+
+async function loadStats() {
+  const r = await fetch('/api/stats');
+  const d = await r.json();
+  document.getElementById('cTrades').textContent = d.total_trades;
+  const pnl = d.pnl;
+  const pnlEl = document.getElementById('cPnl');
+  pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+  pnlEl.className = 'val ' + (pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+  document.getElementById('cWins').textContent = d.wins;
+  document.getElementById('cLosses').textContent = d.losses;
+  document.getElementById('cWR').textContent = d.win_rate + '%';
+  document.getElementById('cTicks').textContent = d.tick_count;
+  document.getElementById('cErrors').textContent = d.errors;
+  if (d.last_tick) document.getElementById('lastTick').textContent = 'Ultimo tick: ' + d.last_tick;
+}
+
+async function loadTrades() {
+  const r = await fetch('/api/trades');
+  const trades = await r.json();
+  const tbody = document.getElementById('tradesBody');
+  if (!trades.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:#555">Nenhum trade ainda</td></tr>'; return; }
+  tbody.innerHTML = trades.slice().reverse().map(t => {
+    const pnl = t.pnl || 0;
+    return '<tr>' +
+      '<td><b>' + (t.symbol||'-') + '</b></td>' +
+      '<td class="' + (t.side==='LONG'?'long':'short') + '">' + (t.side||'-') + '</td>' +
+      '<td>' + parseFloat(t.entry||0).toFixed(4) + '</td>' +
+      '<td>' + parseFloat(t.exit||0).toFixed(4) + '</td>' +
+      '<td class="' + (pnl>=0?'pnl-pos':'pnl-neg') + '">' + (pnl>=0?'+':'') + parseFloat(pnl).toFixed(4) + '</td>' +
+      '<td>' + (t.reason||'-') + '</td>' +
+      '<td style="font-size:11px; color:#666">' + (t.closed_at||'-') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function loadLogs() {
+  const r = await fetch('/api/logs');
+  const d = await r.json();
+  const box = document.getElementById('logBox');
+  if (!d.logs || !d.logs.length) { box.textContent = 'Aguardando logs...'; return; }
+  box.innerHTML = d.logs.slice().reverse().map(l => {
+    let cls = '';
+    if (l.includes('[REAL]')) cls = 'real';
+    else if (l.includes('[TRADE') || l.includes('[SINAL]')) cls = 'trade';
+    else if (l.includes('ERROR') || l.includes('Erro')) cls = 'err';
+    else if (l.includes('[STATS]')) cls = 'stats';
+    return '<div class="' + cls + '">' + l.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
+  }).join('');
+}
+
+async function refresh() {
+  await Promise.all([loadPrice(), loadStats(), loadTrades(), loadLogs()]);
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
+"""
