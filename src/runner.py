@@ -3,7 +3,6 @@ import time
 import threading
 from loguru import logger
 from src.core.config import settings
-from src.core.risk import position_size, should_stop_trading
 from src.core.paper_engine import PaperEngine
 from src.core.store import save_trade
 from src.api.binance_client import BinanceClient
@@ -20,6 +19,8 @@ STRATEGIES = [
     ("Scalping_RSI", scalping_rsi.check_signal),
 ]
 
+RISK_PCT = 0.01  # risk 1% of balance per trade
+
 
 def run_strategy(name, signal_fn, candles, symbol):
     global _engine, _daily_start_balance
@@ -29,15 +30,22 @@ def run_strategy(name, signal_fn, candles, symbol):
             return
 
         price = candles[-1]["close"]
-        size = position_size(_engine.balance, price, settings.max_leverage)
+        if price <= 0:
+            return
+
+        # Simple position sizing: risk 1% of balance
+        risk_amount = _engine.balance * RISK_PCT
+        stop_distance = price * 0.005  # 0.5% stop loss
+        size = (risk_amount * settings.max_leverage) / stop_distance
         if size <= 0:
             return
 
-        if should_stop_trading(_engine.balance, _daily_start_balance):
-            logger.warning(f"[{name}] Daily stop triggered")
+        # Daily drawdown guard
+        if _engine.balance < _daily_start_balance * (1 - 0.05):
+            logger.warning(f"[{name}] Daily drawdown limit reached")
             return
 
-        logger.info(f"[{name}] Signal: {signal} at {price}")
+        logger.info(f"[{name}] Signal: {signal} | price={price:.2f} | size={size:.6f}")
 
         exit_price = price * (1.003 if signal == "BUY" else 0.997)
         pnl = (exit_price - price) * size if signal == "BUY" else (price - exit_price) * size
@@ -55,10 +63,10 @@ def run_strategy(name, signal_fn, candles, symbol):
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
         save_trade(trade)
-        logger.info(f"[{name}] Trade saved: {trade}")
+        logger.info(f"[{name}] Trade saved | pnl={pnl:.4f} | balance={_engine.balance:.2f}")
 
     except Exception as e:
-        logger.error(f"[{name}] Error: {e}")
+        logger.error(f"[{name}] Error in run_strategy: {e}")
 
 
 def tick():
@@ -70,6 +78,7 @@ def tick():
         interval_sec = 30
 
     client = BinanceClient()
+    logger.info(f"Bot tick loop started | symbol={symbol} | interval={interval_sec}s")
 
     while True:
         try:
@@ -88,7 +97,7 @@ def tick():
             for t in threads:
                 t.join(timeout=10)
 
-            logger.info(f"Tick complete. Balance: {_engine.balance:.2f} USDT")
+            logger.info(f"Tick done | balance={_engine.balance:.2f} USDT")
 
         except Exception as e:
             logger.error(f"Tick error: {e}")
@@ -97,7 +106,7 @@ def tick():
 
 
 def start():
-    logger.info("Starting bot with 3 strategies: EMA_RSI, Breakout, Scalping_RSI")
+    logger.info("Starting bot | strategies: EMA_RSI, Breakout, Scalping_RSI")
     t = threading.Thread(target=tick, daemon=True)
     t.start()
 
