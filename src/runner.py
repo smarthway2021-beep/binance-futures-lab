@@ -20,6 +20,25 @@ def run_once():
 
     logger.info(f"=== Runner tick | modo={settings.app_mode} simbolos={settings.symbols} ===")
 
+        # DEMO: Criar trade sintético para validar dashboard
+    if not hasattr(run_once, "_first_run_done"):        logger.info("[DEMO] Criando trade sint
+            run_once._first_run_done = Trueético de teste...")
+        from src.core.store import save_trade
+        from datetime import datetime
+        demo_trade = {
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "entry": 95000.0,
+            "exit": 96500.0,
+            "size": 0.01,
+            "pnl": 15.0,
+            "reason": "TP",
+            "closed_at": datetime.now().isoformat()
+        }
+        save_trade(demo_trade)
+        logger.info("[DEMO] Trade sintético criado com sucesso!")
+
+
     # Checar drawdown diario
     if should_stop_trading(_daily_start_balance, _engine.balance, settings.max_daily_drawdown):
         logger.warning("Drawdown diario atingido - pulando este tick")
