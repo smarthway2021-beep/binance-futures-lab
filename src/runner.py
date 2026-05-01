@@ -29,7 +29,7 @@ def run_strategy(name, signal_fn, candles, symbol):
             return
 
         price = candles[-1]["close"]
-        size = position_size(_engine.balance, price, settings.leverage)
+        size = position_size(_engine.balance, price, settings.max_leverage)
         if size <= 0:
             return
 
