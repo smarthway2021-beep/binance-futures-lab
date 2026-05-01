@@ -1,6 +1,3 @@
-"""
-store.py - Persistencia de trades em memoria + arquivo JSON
-"""
 import json
 import os
 from loguru import logger
@@ -30,31 +27,29 @@ def _save_to_disk():
 
 
 def save_trade(trade_dict: dict):
-    """Salva um trade no cache e no disco."""
+    """Salva um trade real no cache e no disco."""
     global _trades_cache
     if not _trades_cache:
         _load_from_disk()
-    # Evitar duplicatas por timestamp
-    existing_keys = {t.get("closed_at") for t in _trades_cache}
-    key = trade_dict.get("closed_at")
-    if key and key in existing_keys:
-        return
     _trades_cache.append(trade_dict)
     _save_to_disk()
     logger.info("[STORE] Trade salvo: {} {} pnl={}".format(
-        trade_dict.get("symbol"), trade_dict.get("side"), trade_dict.get("pnl")))
+        trade_dict.get("symbol", "-"),
+        trade_dict.get("side", "-"),
+        trade_dict.get("pnl", "-")
+    ))
 
 
 def get_trades() -> list:
-    """Retorna todos os trades salvos."""
+    global _trades_cache
     if not _trades_cache:
         _load_from_disk()
     return list(_trades_cache)
 
 
 def clear_trades():
-    """Limpa todos os trades (uso em testes)."""
+    """Limpa todos os trades (reseta historico)."""
     global _trades_cache
     _trades_cache = []
-    if os.path.exists(_TRADES_FILE):
-        os.remove(_TRADES_FILE)
+    _save_to_disk()
+    logger.info("[STORE] Historico de trades limpo.")
